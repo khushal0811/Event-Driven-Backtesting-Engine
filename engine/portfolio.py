@@ -1,0 +1,173 @@
+"""
+portfolio.py — Portfolio management for the backtesting engine.
+
+Tracks:
+  - Cash balance (updated on every FillEvent)
+  - Positions per symbol (net quantity, positive = long)
+  - Holdings value (positions × current market price)
+  - Total portfolio value history (equity curve snapshots)
+
+The Portfolio is the single source of truth for P&L state.
+No other module modifies cash or positions.
+
+Usage (engine loop):
+    portfolio.update_market_value(market_event)   # on every MarketEvent
+    portfolio.on_fill_event(fill_event)           # on every FillEvent
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from engine.events import FillEvent, MarketEvent, OrderSide
+
+
+# ---------------------------------------------------------------------------
+# Snapshot — one row of the equity curve
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PortfolioSnapshot:
+    """Immutable record of portfolio state at a point in time."""
+    timestamp:      datetime
+    cash:           float
+    holdings_value: float
+    total_value:    float
+
+
+# ---------------------------------------------------------------------------
+# Portfolio
+# ---------------------------------------------------------------------------
+
+class Portfolio:
+    """
+    Maintains cash, positions, and a running equity curve.
+
+    Args:
+        initial_cash : Starting capital in dollars. Must be positive.
+
+    Raises:
+        ValueError: If initial_cash <= 0.
+    """
+
+    def __init__(self, initial_cash: float = 100_000.0) -> None:
+        if initial_cash <= 0:
+            raise ValueError(
+                f"initial_cash must be positive, got {initial_cash}."
+            )
+
+        self._cash:     float             = initial_cash
+        self._initial_cash: float         = initial_cash
+
+        # Net quantity per symbol  (positive = long, 0 = flat)
+        self._positions: Dict[str, int]   = {}
+
+        # Last known market price per symbol (set by update_market_value)
+        self._prices: Dict[str, float]    = {}
+
+        # Equity curve — one snapshot per fill
+        self._history: List[PortfolioSnapshot] = []
+
+    # ------------------------------------------------------------------
+    # Engine loop hooks
+    # ------------------------------------------------------------------
+
+    def update_market_value(self, event: MarketEvent) -> None:
+        """
+        Record the latest market price for a symbol.
+
+        Called by the engine loop on every MarketEvent so holdings_value
+        is always computed against current prices.
+        """
+        self._prices[event.symbol] = event.price
+
+    def on_fill_event(self, event: FillEvent) -> None:
+        """
+        Apply a fill to cash and positions, then record an equity snapshot.
+
+        BUY  → cash decreases, position increases
+        SELL → cash increases, position decreases
+        """
+        symbol   = event.symbol
+        qty      = event.quantity
+        price    = event.fill_price
+        cost     = qty * price
+
+        if event.side == OrderSide.BUY:
+            self._cash -= cost
+            self._positions[symbol] = self._positions.get(symbol, 0) + qty
+        else:  # SELL
+            self._cash += cost
+            self._positions[symbol] = self._positions.get(symbol, 0) - qty
+
+        # Record snapshot
+        snapshot = PortfolioSnapshot(
+            timestamp      = event.timestamp,
+            cash           = self._cash,
+            holdings_value = self.holdings_value,
+            total_value    = self.total_value,
+        )
+        self._history.append(snapshot)
+
+    # ------------------------------------------------------------------
+    # State accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def cash(self) -> float:
+        """Current cash balance."""
+        return self._cash
+
+    @property
+    def holdings_value(self) -> float:
+        """
+        Current market value of all open positions.
+
+        Uses the last known price per symbol from update_market_value().
+        Symbols with no price record are valued at 0 (conservative).
+        """
+        total = 0.0
+        for symbol, qty in self._positions.items():
+            price  = self._prices.get(symbol, 0.0)
+            total += qty * price
+        return total
+
+    @property
+    def total_value(self) -> float:
+        """Cash + holdings value — the total portfolio NAV."""
+        return self._cash + self.holdings_value
+
+    @property
+    def positions(self) -> Dict[str, int]:
+        """Snapshot of current net positions (symbol → net quantity)."""
+        return dict(self._positions)
+
+    @property
+    def history(self) -> List[PortfolioSnapshot]:
+        """Full equity curve — one PortfolioSnapshot per FillEvent."""
+        return list(self._history)
+
+    @property
+    def initial_cash(self) -> float:
+        """Starting capital."""
+        return self._initial_cash
+
+    def position(self, symbol: str) -> int:
+        """Return net quantity held for a symbol (0 if flat)."""
+        return self._positions.get(symbol, 0)
+
+    def last_price(self, symbol: str) -> Optional[float]:
+        """Return the last market price seen for a symbol, or None."""
+        return self._prices.get(symbol)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        return (
+            f"Portfolio("
+            f"cash={self._cash:.2f}, "
+            f"holdings={self.holdings_value:.2f}, "
+            f"total={self.total_value:.2f})"
+        )
