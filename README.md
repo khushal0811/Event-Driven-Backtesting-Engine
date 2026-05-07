@@ -2,7 +2,7 @@
 
 A deterministic, event-driven backtesting engine that simulates trading strategies over historical market data and produces realistic performance metrics.
 
-Built as a signal project demonstrating **system design**, **event-driven architecture**, and **trading system fundamentals**.
+Built to explore trading system architecture, event-driven simulation, and portfolio execution workflows.
 
 ---
 
