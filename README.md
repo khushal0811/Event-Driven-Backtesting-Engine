@@ -188,7 +188,7 @@ The `Strategy` ABC defines the interface. `MovingAverageCrossover` is the includ
 
 - Emits **BUY** when the short MA crosses above the long MA
 - Emits **SELL** when the short MA crosses below the long MA
-- Signals only fire on direction changes — no duplicate emissions
+- Prevents duplicate directional signals.
 
 ```python
 from engine.strategy import MovingAverageCrossover
