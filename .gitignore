@@ -1,0 +1,34 @@
+# Development context — never push to GitHub
+Context/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data / Parquet files
+data/
+*.parquet
+*.csv
+
+# Logs
+*.log
