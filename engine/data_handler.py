@@ -26,7 +26,7 @@ from typing import List, Iterator
 
 import pandas as pd
 
-from engine.events import MarketEvent
+from engine.events import MarketEvent, DividendEvent
 
 # ---------------------------------------------------------------------------
 # Path bootstrap — allow the engine repo to locate the pipeline package
@@ -39,7 +39,11 @@ _PIPELINE_ROOT = os.path.abspath(
 if _PIPELINE_ROOT not in sys.path:
     sys.path.insert(0, _PIPELINE_ROOT)
 
-from market_data.storage import load_from_parquet, get_available_symbols  # noqa: E402
+from market_data.storage import (  # type: ignore[import-not-found]  # noqa: E402
+    load_from_parquet,
+    get_available_symbols,
+    load_dividends_from_parquet,
+)
 
 
 class DataHandler:
@@ -60,18 +64,21 @@ class DataHandler:
 
     def __init__(
         self,
-        symbols: List[str],
-        data_dir: str = "data/",
+        symbols:           List[str],
+        data_dir:          str  = "data/",
+        include_dividends: bool = True,
     ) -> None:
-        self._data_dir = data_dir
-        self._symbols  = symbols if symbols else get_available_symbols(data_dir)
+        self._data_dir          = data_dir
+        self._symbols           = symbols if symbols else get_available_symbols(data_dir)
+        self._include_dividends = include_dividends
 
         if not self._symbols:
             raise ValueError(
                 f"No symbols provided and no Parquet files found in '{data_dir}'."
             )
 
-        self._df: pd.DataFrame = self._load_and_merge()
+        self._df:     pd.DataFrame = self._load_and_merge()
+        self._div_df: pd.DataFrame = self._load_dividends() if include_dividends else pd.DataFrame()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -84,25 +91,50 @@ class DataHandler:
 
     @property
     def bar_count(self) -> int:
-        """Total number of MarketEvents that will be emitted."""
+        """Total number of MarketEvents (bars) — excludes dividend events."""
         return len(self._df)
 
-    def stream(self) -> Iterator[MarketEvent]:
-        """
-        Yield MarketEvents in strict timestamp order.
+    @property
+    def dividend_count(self) -> int:
+        """Total number of dividend events in the stream."""
+        return len(self._div_df) if not self._div_df.empty else 0
 
-        This is the primary method consumed by the engine loop.
-        Each row in the merged, sorted DataFrame becomes one MarketEvent.
+    def stream(self) -> Iterator:
         """
-        for row in self._df.itertuples(index=False):
-            yield MarketEvent(
+        Yield MarketEvents and DividendEvents in strict timestamp order.
+
+        Uses a merge of two sorted sequences — O(n) not O(n log n).
+        Dividend events on the same timestamp as a market bar are yielded
+        AFTER the market bar so the portfolio has current prices first.
+        """
+        import heapq
+
+        market_iter = (
+            (row.timestamp, 0, MarketEvent(
                 timestamp=row.timestamp.to_pydatetime(),
                 symbol=row.symbol,
                 price=float(row.close),
                 volume=float(row.volume),
-            )
+            ))
+            for row in self._df.itertuples(index=False)
+        )
 
-    def __iter__(self) -> Iterator[MarketEvent]:
+        if self._include_dividends and not self._div_df.empty:
+            div_iter = (
+                (row.timestamp, 1, DividendEvent(
+                    timestamp=row.timestamp.to_pydatetime(),
+                    symbol=row.symbol,
+                    dividend_per_share=float(row.dividend_per_share),
+                ))
+                for row in self._div_df.itertuples(index=False)
+            )
+            for _, _, event in heapq.merge(market_iter, div_iter, key=lambda x: (x[0], x[1])):
+                yield event
+        else:
+            for _, _, event in market_iter:
+                yield event
+
+    def __iter__(self) -> Iterator:
         return self.stream()
 
     def __repr__(self) -> str:
@@ -152,3 +184,23 @@ class DataHandler:
             )
 
         return merged
+
+    def _load_dividends(self) -> pd.DataFrame:
+        """
+        Load dividend data for all symbols that have it.
+        Symbols without dividend files are silently skipped.
+        """
+        frames = []
+        for symbol in self._symbols:
+            try:
+                df = load_dividends_from_parquet(symbol, self._data_dir)
+                if df is not None and not df.empty:
+                    frames.append(df)
+            except Exception:
+                pass  # dividend data is optional — never crash here
+
+        if not frames:
+            return pd.DataFrame(columns=["timestamp", "symbol", "dividend_per_share"])
+
+        merged = pd.concat(frames, ignore_index=True)
+        return merged.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
