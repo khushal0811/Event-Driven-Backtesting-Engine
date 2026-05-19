@@ -1,2 +1,11 @@
-pandas
-pyarrow
+# Runtime dependencies
+pandas>=2.0
+pyarrow>=14.0
+numpy>=1.26
+
+# Dev / test dependencies
+pytest>=9.0
+
+# Market-data pipeline (must be installed as an editable package from the
+# sibling directory — see README "Setup" section):
+#   pip install -e ../Backtester-Oriented-Market-Data-Pipeline

@@ -30,9 +30,14 @@ from engine.data_handler   import DataHandler
 from engine.engine         import Engine
 from engine.execution      import SimulatedExecutionEngine
 from engine.metrics        import MetricsResult
-from engine.order_manager  import FixedSizeOrderManager
+from engine.order_manager  import (
+    FixedSizeOrderManager,
+    PercentageOrderManager,
+    RiskBasedOrderManager,
+)
 from engine.portfolio      import Portfolio
-from engine.strategy       import MovingAverageCrossover
+from engine.strategy       import MovingAverageCrossover, build_strategy
+from engine.config         import BacktestConfig
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,75 @@ def run_backtest(
     print(results)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Config-based runner (FastAPI entry point)
+# ---------------------------------------------------------------------------
+
+def run_backtest_from_config(
+    config:        BacktestConfig,
+    emit_callback: callable = None,
+    data_dir:      str = None,
+) -> MetricsResult:
+    """
+    Run a full backtest from a BacktestConfig object.
+
+    This is the primary entry point for the FastAPI backend.
+
+    Args:
+        config        : Validated BacktestConfig object.
+        emit_callback : Optional callback for live streaming events.
+        data_dir      : Path to Parquet data directory. Defaults to pipeline data/.
+
+    Returns:
+        MetricsResult — full performance summary.
+    """
+    config.validate()
+
+    if data_dir is None:
+        data_dir = os.path.join(_PIPELINE_ROOT, "data")
+
+    data_handler     = DataHandler(
+        symbols=config.symbols,
+        data_dir=data_dir,
+        include_dividends=config.include_dividends,
+    )
+    strategy         = build_strategy({
+        "type":       config.strategy.type,
+        "parameters": config.strategy.parameters,
+    })
+    portfolio        = Portfolio(initial_cash=config.initial_capital)
+    execution_engine = SimulatedExecutionEngine()
+
+    # Wire up the correct order manager based on position_sizing config
+    if config.position_sizing == "fixed":
+        order_manager = FixedSizeOrderManager(quantity=int(config.position_size))
+    elif config.position_sizing == "percentage":
+        # config.position_size is a user-facing percentage (0–100).
+        # PercentageOrderManager.percent_of_equity expects a fraction (0–1].
+        # See engine/config.py "CONTRACT" comment for the full API decision.
+        order_manager = PercentageOrderManager(
+            percent_of_equity=config.position_size / 100.0,
+            portfolio=portfolio,
+        )
+    else:  # risk_based — default, driven by the slider
+        order_manager = RiskBasedOrderManager(
+            risk_per_trade=config.risk_per_trade,
+            stop_fraction=config.stop_fraction,
+            portfolio=portfolio,
+        )
+
+    engine = Engine(
+        data_handler=data_handler,
+        strategy=strategy,
+        order_manager=order_manager,
+        execution_engine=execution_engine,
+        portfolio=portfolio,
+        emit_callback=emit_callback,
+    )
+
+    return engine.run()
 
 
 # ---------------------------------------------------------------------------
