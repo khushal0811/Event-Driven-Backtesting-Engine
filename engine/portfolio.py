@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from engine.events import FillEvent, MarketEvent, OrderSide
+from engine.events import FillEvent, MarketEvent, OrderSide, DividendEvent
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +65,14 @@ class Portfolio:
         # Last known market price per symbol (set by update_market_value)
         self._prices: Dict[str, float]    = {}
 
-        # Equity curve — one snapshot per fill
-        self._history: List[PortfolioSnapshot] = []
+        # Equity curve — one snapshot per fill (trades only)
+        self._fill_history: List[PortfolioSnapshot] = []
+
+        # Continuous equity curve — one snapshot per market bar
+        self._bar_history: List[PortfolioSnapshot] = []
+
+        # Cumulative dividend income received during the backtest
+        self._total_dividend_income: float = 0.0
 
     # ------------------------------------------------------------------
     # Engine loop hooks
@@ -74,12 +80,21 @@ class Portfolio:
 
     def update_market_value(self, event: MarketEvent) -> None:
         """
-        Record the latest market price for a symbol.
+        Record the latest market price for a symbol and snapshot equity.
 
-        Called by the engine loop on every MarketEvent so holdings_value
-        is always computed against current prices.
+        Called on every MarketEvent bar — produces a continuous equity curve
+        regardless of whether any trades occurred on that bar.
         """
         self._prices[event.symbol] = event.price
+
+        # Record equity snapshot every bar for continuous chart rendering
+        snapshot = PortfolioSnapshot(
+            timestamp      = event.timestamp,
+            cash           = self._cash,
+            holdings_value = self.holdings_value,
+            total_value    = self.total_value,
+        )
+        self._bar_history.append(snapshot)
 
     def on_fill_event(self, event: FillEvent) -> None:
         """
@@ -107,7 +122,24 @@ class Portfolio:
             holdings_value = self.holdings_value,
             total_value    = self.total_value,
         )
-        self._history.append(snapshot)
+        self._fill_history.append(snapshot)
+
+    def on_dividend_event(self, event: "DividendEvent") -> None:
+        """
+        Credit dividend income to cash for the current position in symbol.
+
+        Only symbols with a positive (long) position receive income.
+        Called by the engine loop when a DividendEvent is routed here.
+        """
+        symbol = event.symbol
+        qty    = self._positions.get(symbol, 0)
+
+        if qty <= 0:
+            return  # not holding this symbol — no income
+
+        income = qty * event.dividend_per_share
+        self._cash += income
+        self._total_dividend_income += income
 
     # ------------------------------------------------------------------
     # State accessors
@@ -144,8 +176,21 @@ class Portfolio:
 
     @property
     def history(self) -> List[PortfolioSnapshot]:
-        """Full equity curve — one PortfolioSnapshot per FillEvent."""
-        return list(self._history)
+        """
+        Trade-level equity curve — one snapshot per fill.
+        Kept for backwards compatibility with existing metrics code.
+        """
+        return list(self._fill_history)
+
+    @property
+    def bar_history(self) -> List[PortfolioSnapshot]:
+        """Continuous equity curve — one snapshot per market bar."""
+        return list(self._bar_history)
+
+    @property
+    def total_dividend_income(self) -> float:
+        """Total dividend income received during the backtest."""
+        return self._total_dividend_income
 
     @property
     def initial_cash(self) -> float:

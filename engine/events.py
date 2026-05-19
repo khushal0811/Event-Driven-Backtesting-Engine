@@ -6,6 +6,7 @@ Defines the base Event class and all concrete event types:
   - SignalEvent
   - OrderEvent
   - FillEvent
+  - DividendEvent
 
 All events are plain data containers. No logic lives here.
 """
@@ -21,10 +22,11 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 class EventType(str, Enum):
-    MARKET = "MARKET"
-    SIGNAL = "SIGNAL"
-    ORDER  = "ORDER"
-    FILL   = "FILL"
+    MARKET   = "MARKET"
+    SIGNAL   = "SIGNAL"
+    ORDER    = "ORDER"
+    FILL     = "FILL"
+    DIVIDEND = "DIVIDEND"
 
 
 class SignalType(str, Enum):
@@ -130,3 +132,20 @@ class FillEvent(Event):
     fill_price: float
     timestamp:  datetime
     event_type: EventType = field(default=EventType.FILL, init=False)
+
+
+@dataclass
+class DividendEvent(Event):
+    """
+    Emitted by the DataHandler when a dividend ex-date is reached
+    for a symbol during simulation.
+
+    Attributes:
+        timestamp          : Ex-dividend date (UTC).
+        symbol             : Ticker symbol.
+        dividend_per_share : Dividend in dollars per share.
+    """
+    timestamp:          datetime
+    symbol:             str
+    dividend_per_share: float
+    event_type: EventType = field(default=EventType.DIVIDEND, init=False)
