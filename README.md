@@ -4,6 +4,11 @@ A deterministic, event-driven backtesting engine that simulates trading strategi
 
 Built to explore trading system architecture, event-driven simulation, and portfolio execution workflows.
 
+Part of a three-repo trading system workspace:
+- [Market Data Pipeline](https://github.com/khushal0811/Backtester-Oriented-Market-Data-Pipeline) — Data ingestion, normalization, event streaming
+- **This repo** — Event-Driven Backtesting Engine (strategy simulation)
+- [Strategy Research Terminal](https://github.com/khushal0811/strategy-research-terminal) — Full-stack research UI
+
 ---
 
 ## Architecture
