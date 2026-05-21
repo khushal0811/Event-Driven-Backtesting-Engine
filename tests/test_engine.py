@@ -64,8 +64,23 @@ class TestT78:
 @pytest.mark.integration
 class TestT79:
     def test_dividend_routing(self, data_dir, has_aapl_data):
-        engine, pf = _build_engine(data_dir)
-        result = engine.run()
+        class BuyAndHold(MovingAverageCrossover):
+            def on_market_event(self, event, queue):
+                from engine.events import SignalEvent, SignalType
+                if not hasattr(self, "_bought"):
+                    self._bought = True
+                    queue.put(SignalEvent(symbol=event.symbol, signal_type=SignalType.BUY))
+
+        dh = DataHandler(symbols=["AAPL"], data_dir=data_dir)
+        strat = BuyAndHold(short_window=5, long_window=20)
+        om = FixedSizeOrderManager(quantity=100)
+        ee = SimulatedExecutionEngine()
+        pf = Portfolio(initial_cash=100_000.0)
+        engine = Engine(
+            data_handler=dh, strategy=strat, order_manager=om,
+            execution_engine=ee, portfolio=pf,
+        )
+        engine.run()
         assert pf.total_dividend_income > 0, (
             "No dividend income credited — DividendEvent routing is broken"
         )

@@ -155,7 +155,8 @@ class TestT24:
         p.on_fill_event(_fill("AAPL", OrderSide.SELL, 100, 150.0, NOW))
         cash_before = p.cash
         p.on_dividend_event(_div("AAPL", 0.50, NOW))
-        assert p.cash == cash_before
+        # Short positions pay dividends (debited), so cash decreases by 100 * 0.50 = 50
+        assert p.cash == cash_before - 50.0
         assert p.total_dividend_income == 0.0
 
 

@@ -144,17 +144,20 @@ def run_backtest_from_config(
         symbols=config.symbols,
         data_dir=data_dir,
         include_dividends=config.include_dividends,
+        start_date=config.start_date,
+        end_date=config.end_date,
     )
     strategy         = build_strategy({
         "type":       config.strategy.type,
         "parameters": config.strategy.parameters,
+        "python_code": config.strategy.python_code,
     })
     portfolio        = Portfolio(initial_cash=config.initial_capital)
     execution_engine = SimulatedExecutionEngine()
 
     # Wire up the correct order manager based on position_sizing config
     if config.position_sizing == "fixed":
-        order_manager = FixedSizeOrderManager(quantity=int(config.position_size))
+        order_manager = FixedSizeOrderManager(quantity=int(config.position_size), portfolio=portfolio)
     elif config.position_sizing == "percentage":
         # config.position_size is a user-facing percentage (0–100).
         # PercentageOrderManager.percent_of_equity expects a fraction (0–1].
@@ -177,6 +180,7 @@ def run_backtest_from_config(
         execution_engine=execution_engine,
         portfolio=portfolio,
         emit_callback=emit_callback,
+        interval=config.interval,
     )
 
     return engine.run()
