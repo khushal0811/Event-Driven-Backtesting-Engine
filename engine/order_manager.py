@@ -2,9 +2,10 @@
 order_manager.py — Order Management layer for the backtesting engine.
 
 Defines:
-  - OrderManager        : Abstract base class all order managers must implement.
-  - FixedSizeOrderManager : Concrete implementation — converts every SignalEvent
-                            into a fixed-quantity market OrderEvent.
+  - OrderManager             : Abstract base class all order managers must implement.
+  - FixedSizeOrderManager    : Fixed-quantity market orders.
+  - PercentageOrderManager   : Percentage-of-equity position sizing.
+  - RiskBasedOrderManager    : Risk-per-trade position sizing.
 
 Contract:
   - Receives SignalEvents from the engine loop.
@@ -17,6 +18,7 @@ Contract:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -79,16 +81,18 @@ class FixedSizeOrderManager(OrderManager):
         ValueError: If quantity <= 0.
     """
 
-    def __init__(self, quantity: int = 100) -> None:
+    def __init__(self, quantity: int = 100, portfolio: Optional[Portfolio] = None) -> None:
         if quantity <= 0:
             raise ValueError(f"quantity must be a positive integer, got {quantity}.")
         self._quantity = quantity
+        self._portfolio = portfolio
 
-        # Tracks the current open-position direction per symbol.
+        # Tracks the current open-position direction per symbol (fallback if portfolio not provided).
         # None  → flat (no open position)
         # BUY   → currently long
         # SELL  → currently short
         self._open_position: Dict[str, Optional[SignalType]] = {}
+        self._last_timestamps: Dict[str, Optional[datetime]] = {}
 
     # ------------------------------------------------------------------
     # OrderManager interface
@@ -103,7 +107,16 @@ class FixedSizeOrderManager(OrderManager):
         """
         symbol    = event.symbol
         signal    = event.signal_type
-        current   = self._open_position.get(symbol)
+        
+        if self._portfolio is not None and event.timestamp is not None:
+            pos = self._portfolio.position(symbol)
+            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+            last_ts = self._last_timestamps.get(symbol)
+            if last_ts is None or event.timestamp != last_ts:
+                self._open_position[symbol] = actual_dir
+                self._last_timestamps[symbol] = event.timestamp
+
+        current = self._open_position.get(symbol)
 
         # Suppress if already in this direction
         if signal == current:
@@ -116,6 +129,7 @@ class FixedSizeOrderManager(OrderManager):
             side       = side,
             quantity   = self._quantity,
             order_type = OrderType.MARKET,
+            timestamp  = event.timestamp,
         )
 
         queue.put(order)
@@ -132,6 +146,9 @@ class FixedSizeOrderManager(OrderManager):
 
     def open_position(self, symbol: str) -> Optional[SignalType]:
         """Return the current open-position direction for a symbol, or None."""
+        if self._portfolio is not None:
+            pos = self._portfolio.position(symbol)
+            return SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
         return self._open_position.get(symbol)
 
     def __repr__(self) -> str:
@@ -165,10 +182,20 @@ class PercentageOrderManager(OrderManager):
         self._pct       = percent_of_equity
         self._portfolio = portfolio
         self._open_position: Dict[str, Optional[SignalType]] = {}
+        self._last_timestamps: Dict[str, Optional[datetime]] = {}
 
     def on_signal_event(self, event: SignalEvent, queue: EventQueue) -> None:
         symbol  = event.symbol
         signal  = event.signal_type
+        
+        if self._portfolio is not None and event.timestamp is not None:
+            pos = self._portfolio.position(symbol)
+            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+            last_ts = self._last_timestamps.get(symbol)
+            if last_ts is None or event.timestamp != last_ts:
+                self._open_position[symbol] = actual_dir
+                self._last_timestamps[symbol] = event.timestamp
+
         current = self._open_position.get(symbol)
 
         if signal == current:
@@ -187,7 +214,8 @@ class PercentageOrderManager(OrderManager):
         side  = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
         order = OrderEvent(
             symbol=symbol, side=side,
-            quantity=quantity, order_type=OrderType.MARKET
+            quantity=quantity, order_type=OrderType.MARKET,
+            timestamp=event.timestamp,
         )
         queue.put(order)
         self._open_position[symbol] = signal
@@ -243,10 +271,20 @@ class RiskBasedOrderManager(OrderManager):
         self._stop_fraction = stop_fraction
         self._portfolio     = portfolio
         self._open_position: Dict[str, Optional[SignalType]] = {}
+        self._last_timestamps: Dict[str, Optional[datetime]] = {}
 
     def on_signal_event(self, event: SignalEvent, queue: EventQueue) -> None:
         symbol  = event.symbol
         signal  = event.signal_type
+        
+        if self._portfolio is not None and event.timestamp is not None:
+            pos = self._portfolio.position(symbol)
+            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+            last_ts = self._last_timestamps.get(symbol)
+            if last_ts is None or event.timestamp != last_ts:
+                self._open_position[symbol] = actual_dir
+                self._last_timestamps[symbol] = event.timestamp
+
         current = self._open_position.get(symbol)
 
         if signal == current:
@@ -267,7 +305,8 @@ class RiskBasedOrderManager(OrderManager):
         side  = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
         order = OrderEvent(
             symbol=symbol, side=side,
-            quantity=quantity, order_type=OrderType.MARKET
+            quantity=quantity, order_type=OrderType.MARKET,
+            timestamp=event.timestamp,
         )
         queue.put(order)
         self._open_position[symbol] = signal
