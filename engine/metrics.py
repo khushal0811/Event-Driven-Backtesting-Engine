@@ -120,6 +120,7 @@ def compute_metrics(
     dividend_income:  float = 0.0,
     benchmark_return: Optional[float] = None,
     trades:           Optional[List[dict]] = None,
+    interval:         str = "1d",
 ) -> MetricsResult:
     """
     Compute performance metrics from equity curve data.
@@ -133,6 +134,7 @@ def compute_metrics(
         dividend_income  : Total dividend income in dollars.
         benchmark_return : Benchmark total return (optional).
         trades           : List of trade dicts with 'pnl' and 'return' keys (optional).
+        interval         : Bar interval (e.g. "1d", "1h", "15m", "1m").
 
     Returns:
         MetricsResult with all computed metrics.
@@ -171,13 +173,13 @@ def compute_metrics(
 
     return MetricsResult(
         total_return              = total_ret,
-        sharpe_ratio              = _sharpe_ratio(equity_curve),
+        sharpe_ratio              = _sharpe_ratio(equity_curve, interval),
         max_drawdown              = _max_drawdown(equity_curve),
         initial_value             = initial_cash,
         final_value               = final_value,
         total_snapshots           = len(history),
         cagr                      = _cagr(initial_cash, final_value, start_date, end_date),
-        volatility                = _annualised_volatility(equity_curve),
+        volatility                = _annualised_volatility(equity_curve, interval),
         win_rate                  = _win_rate(trades),
         total_trades              = len(trades) if trades else len(fill_history),
         avg_trade_return          = _avg_trade_return(trades),
@@ -200,7 +202,21 @@ def _total_return(initial: float, final: float) -> float:
     return (final - initial) / initial
 
 
-def _sharpe_ratio(equity_curve: List[float]) -> Optional[float]:
+def _get_annualization_factor(interval: str) -> float:
+    """Return number of bar periods in a trading year for the given interval."""
+    factor_map = {
+        "1m":  252.0 * 390.0,
+        "2m":  252.0 * 195.0,
+        "5m":  252.0 * 78.0,
+        "15m": 252.0 * 26.0,
+        "30m": 252.0 * 13.0,
+        "1h":  252.0 * 7.0,
+        "1d":  252.0,
+    }
+    return factor_map.get(interval, 252.0)
+
+
+def _sharpe_ratio(equity_curve: List[float], interval: str = "1d") -> Optional[float]:
     """
     Annualised Sharpe ratio (risk-free rate = 0).
 
@@ -229,7 +245,8 @@ def _sharpe_ratio(equity_curve: List[float]) -> Optional[float]:
     if std == 0.0:
         return None  # flat returns — Sharpe undefined
 
-    return (mean / std) * math.sqrt(252)
+    ann_factor = _get_annualization_factor(interval)
+    return (mean / std) * math.sqrt(ann_factor)
 
 
 def _max_drawdown(equity_curve: List[float]) -> float:
@@ -265,7 +282,7 @@ def _cagr(
     return (final / initial) ** (1.0 / years) - 1.0
 
 
-def _annualised_volatility(equity_curve: List[float]) -> Optional[float]:
+def _annualised_volatility(equity_curve: List[float], interval: str = "1d") -> Optional[float]:
     """Annualised standard deviation of period returns."""
     if len(equity_curve) < 2:
         return None
@@ -279,7 +296,9 @@ def _annualised_volatility(equity_curve: List[float]) -> Optional[float]:
     n    = len(returns)
     mean = sum(returns) / n
     variance = sum((r - mean) ** 2 for r in returns) / (n - 1)  # sample std
-    return math.sqrt(variance) * math.sqrt(252)
+    
+    ann_factor = _get_annualization_factor(interval)
+    return math.sqrt(variance) * math.sqrt(ann_factor)
 
 
 def _win_rate(trades: Optional[List[dict]]) -> Optional[float]:

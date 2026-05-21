@@ -628,23 +628,59 @@ def build_strategy(config: dict) -> Strategy:
 
     Args:
         config: dict with keys:
-            "type"       (str)  — must match a key in STRATEGY_REGISTRY
-            "parameters" (dict) — keyword arguments passed to the strategy __init__
+            "type"        (str)  — must match a key in STRATEGY_REGISTRY, or "custom"
+            "parameters"  (dict) — keyword arguments passed to the strategy __init__
+            "python_code" (str)  — user-defined Python strategy implementation if type is "custom"
 
     Returns:
         Instantiated Strategy object.
 
     Raises:
-        ValueError: If strategy type is not in registry.
+        ValueError: If strategy type is not in registry/custom invalid.
         TypeError:  If parameters don't match the strategy constructor.
-
-    Example:
-        strategy = build_strategy({
-            "type": "momentum",
-            "parameters": {"lookback": 20, "threshold": 0.02}
-        })
     """
     strategy_type = config.get("type")
+    
+    if strategy_type == "custom":
+        python_code = config.get("python_code")
+        if not python_code or not python_code.strip():
+            raise ValueError("Custom strategy type requested but python_code is empty.")
+            
+        # Execute the python code in a clean local namespace
+        local_namespace = {
+            "Strategy": Strategy,
+            "MarketEvent": MarketEvent,
+            "SignalEvent": SignalEvent,
+            "SignalType": SignalType,
+            "EventQueue": EventQueue,
+            "math": math,
+        }
+        try:
+            exec(python_code, globals(), local_namespace)
+        except Exception as e:
+            raise ValueError(f"Failed to execute custom strategy Python code: {e}")
+            
+        # Find subclasses of Strategy inside the executed namespace
+        strategy_classes = [
+            v for k, v in local_namespace.items()
+            if isinstance(v, type) and issubclass(v, Strategy) and v is not Strategy
+        ]
+        
+        if not strategy_classes:
+            raise ValueError(
+                "Could not find any subclass of Strategy in the provided python_code. "
+                "Ensure your custom class inherits from Strategy."
+            )
+            
+        cls = strategy_classes[0]
+        params = config.get("parameters", {})
+        try:
+            return cls(**params)
+        except TypeError as e:
+            raise TypeError(
+                f"Invalid parameters for custom strategy '{cls.__name__}': {e}"
+            )
+
     if strategy_type not in STRATEGY_REGISTRY:
         raise ValueError(
             f"Unknown strategy type: '{strategy_type}'. "

@@ -106,7 +106,7 @@ class SimulatedExecutionEngine(ExecutionEngine):
             )
             return
 
-        timestamp = self._timestamps.get(symbol, datetime.now(tz=timezone.utc))
+        timestamp = event.timestamp or self._timestamps.get(symbol, datetime.now(tz=timezone.utc))
 
         fill = FillEvent(
             symbol     = symbol,
