@@ -89,10 +89,12 @@ class SignalEvent(Event):
         symbol      : Ticker symbol.
         signal_type : BUY or SELL.
         strength    : Optional signal strength in [0.0, 1.0].
+        timestamp   : Optional datetime when signal was generated.
     """
     symbol:      str
     signal_type: SignalType
     strength:    Optional[float] = None
+    timestamp:   Optional[datetime] = None
     event_type:  EventType = field(default=EventType.SIGNAL, init=False)
 
 
@@ -106,11 +108,13 @@ class OrderEvent(Event):
         side       : BUY or SELL.
         quantity   : Number of units to trade.
         order_type : Always MARKET in this engine.
+        timestamp  : Optional datetime when order was generated.
     """
     symbol:     str
     side:       OrderSide
     quantity:   int
     order_type: OrderType = field(default=OrderType.MARKET)
+    timestamp:  Optional[datetime] = None
     event_type: EventType = field(default=EventType.ORDER, init=False)
 
 

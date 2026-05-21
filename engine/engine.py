@@ -61,6 +61,7 @@ class Engine:
         portfolio:        Portfolio,
         emit_callback:    Optional[Callable[[dict], None]] = None,
         emit_frequency:   int = 10,
+        interval:         str = "1d",
     ) -> None:
         self._data        = data_handler
         self._strategy    = strategy
@@ -70,6 +71,8 @@ class Engine:
         self._queue       = EventQueue()
         self._emit        = emit_callback or (lambda msg: None)
         self._emit_freq   = emit_frequency
+        self._current_timestamp = None
+        self._interval    = interval
 
     # ------------------------------------------------------------------
     # Public interface
@@ -94,12 +97,20 @@ class Engine:
         """
         bars_processed = 0
         total_bars     = self._data.bar_count
+        current_timestamp = None
 
         for event in self._data:
             if isinstance(event, MarketEvent):
+                # If the timestamp changes, snapshot the portfolio for the PREVIOUS timestamp
+                if current_timestamp is not None and event.timestamp != current_timestamp:
+                    self._portfolio.record_bar_snapshot(current_timestamp)
+                
+                current_timestamp = event.timestamp
+                self._current_timestamp = event.timestamp
+                
                 # Keep price registers current before any routing
                 self._execution.update_price(event)
-                self._portfolio.update_market_value(event)
+                self._portfolio.update_last_price(event.symbol, event.price)
 
                 # Seed the queue with this bar's MarketEvent
                 self._queue.put(event)
@@ -128,11 +139,17 @@ class Engine:
                     queued_event = self._queue.get()
                     self._route(queued_event)
 
+        # Record the final bar snapshot
+        if current_timestamp is not None:
+            self._portfolio.record_bar_snapshot(current_timestamp)
+
         return compute_metrics(
             bar_history      = self._portfolio.bar_history,
             fill_history     = self._portfolio.history,
             initial_cash     = self._portfolio.initial_cash,
             dividend_income  = self._portfolio.total_dividend_income,
+            trades           = self._portfolio.completed_trades,
+            interval         = self._interval,
         )
 
     # ------------------------------------------------------------------
@@ -146,6 +163,9 @@ class Engine:
         Each handler may put new events onto self._queue, which will be
         processed in subsequent iterations of the drain loop.
         """
+        if hasattr(event, "timestamp") and event.timestamp is None:
+            event.timestamp = self._current_timestamp
+
         t = event.event_type
 
         if t == EventType.MARKET:

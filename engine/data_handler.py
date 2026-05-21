@@ -22,6 +22,7 @@ Usage:
 
 import sys
 import os
+from datetime import date
 from typing import List, Iterator
 
 import pandas as pd
@@ -67,10 +68,14 @@ class DataHandler:
         symbols:           List[str],
         data_dir:          str  = "data/",
         include_dividends: bool = True,
+        start_date:        date = None,
+        end_date:          date = None,
     ) -> None:
         self._data_dir          = data_dir
         self._symbols           = symbols if symbols else get_available_symbols(data_dir)
         self._include_dividends = include_dividends
+        self._start_date        = start_date
+        self._end_date          = end_date
 
         if not self._symbols:
             raise ValueError(
@@ -160,7 +165,20 @@ class DataHandler:
         for symbol in self._symbols:
             try:
                 df = load_from_parquet(symbol, self._data_dir)
-                frames.append(df)
+                
+                # Filter to requested date bounds if provided
+                if self._start_date is not None:
+                    start_ts = pd.Timestamp(self._start_date, tz="UTC")
+                    df = df[df["timestamp"] >= start_ts]
+                if self._end_date is not None:
+                    end_ts = pd.Timestamp(self._end_date, tz="UTC")
+                    df = df[df["timestamp"] <= end_ts]
+                
+                if not df.empty:
+                    frames.append(df)
+                else:
+                    print(f"[DataHandler] Warning: symbol '{symbol}' has no data in range "
+                          f"{self._start_date} to {self._end_date} — skipping.")
             except FileNotFoundError:
                 print(f"[DataHandler] Warning: no Parquet file for '{symbol}' — skipping.")
 
@@ -195,7 +213,16 @@ class DataHandler:
             try:
                 df = load_dividends_from_parquet(symbol, self._data_dir)
                 if df is not None and not df.empty:
-                    frames.append(df)
+                    # Filter by start_date/end_date too
+                    if self._start_date is not None:
+                        start_ts = pd.Timestamp(self._start_date, tz="UTC")
+                        df = df[df["timestamp"] >= start_ts]
+                    if self._end_date is not None:
+                        end_ts = pd.Timestamp(self._end_date, tz="UTC")
+                        df = df[df["timestamp"] <= end_ts]
+                    
+                    if not df.empty:
+                        frames.append(df)
             except Exception:
                 pass  # dividend data is optional — never crash here
 

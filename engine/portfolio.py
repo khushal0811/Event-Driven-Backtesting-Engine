@@ -74,6 +74,10 @@ class Portfolio:
         # Cumulative dividend income received during the backtest
         self._total_dividend_income: float = 0.0
 
+        # Trade tracking
+        self._completed_trades: List[dict] = []
+        self._open_trades: Dict[str, List[dict]] = {}
+
     # ------------------------------------------------------------------
     # Engine loop hooks
     # ------------------------------------------------------------------
@@ -96,6 +100,20 @@ class Portfolio:
         )
         self._bar_history.append(snapshot)
 
+    def update_last_price(self, symbol: str, price: float) -> None:
+        """Update last known price without creating a snapshot."""
+        self._prices[symbol] = price
+
+    def record_bar_snapshot(self, timestamp: datetime) -> None:
+        """Record equity snapshot for the given timestamp (usually once per consolidated bar)."""
+        snapshot = PortfolioSnapshot(
+            timestamp      = timestamp,
+            cash           = self._cash,
+            holdings_value = self.holdings_value,
+            total_value    = self.total_value,
+        )
+        self._bar_history.append(snapshot)
+
     def on_fill_event(self, event: FillEvent) -> None:
         """
         Apply a fill to cash and positions, then record an equity snapshot.
@@ -108,12 +126,113 @@ class Portfolio:
         price    = event.fill_price
         cost     = qty * price
 
+        current_qty = self._positions.get(symbol, 0)
+
         if event.side == OrderSide.BUY:
+            if self._cash < cost:
+                print(f"[Portfolio] WARNING: Insufficient cash to execute BUY of {qty} {symbol} at {price:.2f}. "
+                      f"Required: {cost:.2f}, Available: {self._cash:.2f}. Skipping fill.")
+                return
             self._cash -= cost
-            self._positions[symbol] = self._positions.get(symbol, 0) + qty
+            self._positions[symbol] = current_qty + qty
         else:  # SELL
             self._cash += cost
-            self._positions[symbol] = self._positions.get(symbol, 0) - qty
+            self._positions[symbol] = current_qty - qty
+
+        # FIFO Trade matching
+        if symbol not in self._open_trades:
+            self._open_trades[symbol] = []
+
+        trade_qty = qty
+        
+        if current_qty == 0:
+            # Opening a new position
+            self._open_trades[symbol].append({
+                "price": price,
+                "qty": trade_qty,
+                "timestamp": event.timestamp,
+                "side": event.side
+            })
+        elif current_qty > 0:
+            # Currently long
+            if event.side == OrderSide.BUY:
+                # Adding to long
+                self._open_trades[symbol].append({
+                    "price": price,
+                    "qty": trade_qty,
+                    "timestamp": event.timestamp,
+                    "side": event.side
+                })
+            else:
+                # Reducing or reversing long
+                while trade_qty > 0 and self._open_trades[symbol]:
+                    entry = self._open_trades[symbol][0]
+                    close_qty = min(trade_qty, entry["qty"])
+                    pnl = close_qty * (price - entry["price"])
+                    ret = (price - entry["price"]) / entry["price"] if entry["price"] > 0 else 0.0
+                    self._completed_trades.append({
+                        "symbol": symbol,
+                        "pnl": pnl,
+                        "return": ret,
+                        "qty": close_qty,
+                        "entry_price": entry["price"],
+                        "exit_price": price,
+                        "entry_time": entry["timestamp"],
+                        "exit_time": event.timestamp,
+                        "direction": "long"
+                    })
+                    trade_qty -= close_qty
+                    entry["qty"] -= close_qty
+                    if entry["qty"] <= 0:
+                        self._open_trades[symbol].pop(0)
+                if trade_qty > 0:
+                    # Reversed to short
+                    self._open_trades[symbol].append({
+                        "price": price,
+                        "qty": trade_qty,
+                        "timestamp": event.timestamp,
+                        "side": event.side
+                    })
+        else:
+            # Currently short
+            if event.side == OrderSide.SELL:
+                # Adding to short
+                self._open_trades[symbol].append({
+                    "price": price,
+                    "qty": trade_qty,
+                    "timestamp": event.timestamp,
+                    "side": event.side
+                })
+            else:
+                # Reducing or reversing short
+                while trade_qty > 0 and self._open_trades[symbol]:
+                    entry = self._open_trades[symbol][0]
+                    close_qty = min(trade_qty, entry["qty"])
+                    pnl = close_qty * (entry["price"] - price)
+                    ret = (entry["price"] - price) / entry["price"] if entry["price"] > 0 else 0.0
+                    self._completed_trades.append({
+                        "symbol": symbol,
+                        "pnl": pnl,
+                        "return": ret,
+                        "qty": close_qty,
+                        "entry_price": entry["price"],
+                        "exit_price": price,
+                        "entry_time": entry["timestamp"],
+                        "exit_time": event.timestamp,
+                        "direction": "short"
+                    })
+                    trade_qty -= close_qty
+                    entry["qty"] -= close_qty
+                    if entry["qty"] <= 0:
+                        self._open_trades[symbol].pop(0)
+                if trade_qty > 0:
+                    # Reversed to long
+                    self._open_trades[symbol].append({
+                        "price": price,
+                        "qty": trade_qty,
+                        "timestamp": event.timestamp,
+                        "side": event.side
+                    })
 
         # Record snapshot
         snapshot = PortfolioSnapshot(
@@ -126,20 +245,20 @@ class Portfolio:
 
     def on_dividend_event(self, event: "DividendEvent") -> None:
         """
-        Credit dividend income to cash for the current position in symbol.
-
-        Only symbols with a positive (long) position receive income.
-        Called by the engine loop when a DividendEvent is routed here.
+        Credit or debit dividend cash adjustments.
+        - Long position (qty > 0): receive dividend income.
+        - Short position (qty < 0): pay dividend liability (cash decreases).
         """
         symbol = event.symbol
         qty    = self._positions.get(symbol, 0)
 
-        if qty <= 0:
-            return  # not holding this symbol — no income
+        if qty == 0:
+            return
 
-        income = qty * event.dividend_per_share
-        self._cash += income
-        self._total_dividend_income += income
+        adjustment = qty * event.dividend_per_share
+        self._cash += adjustment
+        if qty > 0:
+            self._total_dividend_income += adjustment
 
     # ------------------------------------------------------------------
     # State accessors
@@ -191,6 +310,11 @@ class Portfolio:
     def total_dividend_income(self) -> float:
         """Total dividend income received during the backtest."""
         return self._total_dividend_income
+
+    @property
+    def completed_trades(self) -> List[dict]:
+        """List of completed round-trip trades."""
+        return list(self._completed_trades)
 
     @property
     def initial_cash(self) -> float:
