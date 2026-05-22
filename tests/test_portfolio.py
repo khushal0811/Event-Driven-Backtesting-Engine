@@ -147,17 +147,15 @@ class TestT23:
 
 
 # -----------------------------------------------------------------------
-# T24 — Dividend income is NOT credited for short positions
+# T24 — Selling without a position is blocked (long-only mode)
 # -----------------------------------------------------------------------
 class TestT24:
-    def test_no_dividend_for_short(self):
+    def test_sell_blocked_when_no_position(self):
         p = Portfolio(initial_cash=100_000.0)
         p.on_fill_event(_fill("AAPL", OrderSide.SELL, 100, 150.0, NOW))
-        cash_before = p.cash
-        p.on_dividend_event(_div("AAPL", 0.50, NOW))
-        # Short positions pay dividends (debited), so cash decreases by 100 * 0.50 = 50
-        assert p.cash == cash_before - 50.0
-        assert p.total_dividend_income == 0.0
+        # Sell should be blocked — cash and position unchanged
+        assert p.cash == 100_000.0
+        assert p.positions.get("AAPL", 0) == 0
 
 
 # -----------------------------------------------------------------------

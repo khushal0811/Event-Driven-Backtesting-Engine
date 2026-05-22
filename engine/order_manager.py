@@ -124,10 +124,23 @@ class FixedSizeOrderManager(OrderManager):
 
         side = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
 
+        quantity = self._quantity
+
+        # ── Long-only guard: never sell more than currently held ──
+        if side == OrderSide.SELL:
+            held = 0
+            if self._portfolio is not None:
+                held = self._portfolio.position(symbol)
+            else:
+                held = 0  # no portfolio ref → can't verify, block sell
+            if held <= 0:
+                return  # nothing to sell
+            quantity = min(quantity, held)
+
         order = OrderEvent(
             symbol     = symbol,
             side       = side,
-            quantity   = self._quantity,
+            quantity   = quantity,
             order_type = OrderType.MARKET,
             timestamp  = event.timestamp,
         )
@@ -212,6 +225,14 @@ class PercentageOrderManager(OrderManager):
             return  # position too small — skip
 
         side  = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
+
+        # ── Long-only guard: never sell more than currently held ──
+        if side == OrderSide.SELL:
+            held = self._portfolio.position(symbol)
+            if held <= 0:
+                return  # nothing to sell
+            quantity = min(quantity, held)
+
         order = OrderEvent(
             symbol=symbol, side=side,
             quantity=quantity, order_type=OrderType.MARKET,
@@ -303,6 +324,14 @@ class RiskBasedOrderManager(OrderManager):
             return
 
         side  = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
+
+        # ── Long-only guard: never sell more than currently held ──
+        if side == OrderSide.SELL:
+            held = self._portfolio.position(symbol)
+            if held <= 0:
+                return  # nothing to sell
+            quantity = min(quantity, held)
+
         order = OrderEvent(
             symbol=symbol, side=side,
             quantity=quantity, order_type=OrderType.MARKET,

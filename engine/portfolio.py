@@ -136,6 +136,14 @@ class Portfolio:
             self._cash -= cost
             self._positions[symbol] = current_qty + qty
         else:  # SELL
+            # ── Long-only safety net: never go short ──
+            if current_qty <= 0:
+                print(f"[Portfolio] BLOCKED: Cannot sell {qty} {symbol} — no position held.")
+                return
+            if qty > current_qty:
+                print(f"[Portfolio] CAPPED: Sell qty {qty} exceeds held {current_qty} for {symbol}. Capping to {current_qty}.")
+                qty = current_qty
+                cost = qty * price
             self._cash += cost
             self._positions[symbol] = current_qty - qty
 

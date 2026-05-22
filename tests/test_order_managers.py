@@ -67,9 +67,16 @@ class TestT30:
 # -----------------------------------------------------------------------
 class TestT31:
     def test_direction_reversal(self):
-        om = FixedSizeOrderManager(quantity=100)
+        p  = Portfolio(initial_cash=100_000.0)
+        p.update_market_value(MarketEvent(timestamp=NOW, symbol="AAPL", price=150.0, volume=1000.0))
+        om = FixedSizeOrderManager(quantity=100, portfolio=p)
         q  = EventQueue()
+        # BUY first
         om.on_signal_event(SignalEvent(symbol="AAPL", signal_type=SignalType.BUY), q)
+        # Simulate the buy being filled so portfolio has a position
+        from engine.events import FillEvent
+        p.on_fill_event(FillEvent(symbol="AAPL", side=OrderSide.BUY, quantity=100, fill_price=150.0, timestamp=NOW))
+        # Now SELL should be allowed
         om.on_signal_event(SignalEvent(symbol="AAPL", signal_type=SignalType.SELL), q)
         orders = _collect_orders(q)
         assert len(orders) == 2
