@@ -20,6 +20,7 @@ Loop invariant:
   This preserves strict temporal ordering — no future information leaks.
 """
 
+import threading
 from typing import Callable, Dict, Optional
 
 from engine.data_handler   import DataHandler
@@ -62,6 +63,8 @@ class Engine:
         emit_callback:    Optional[Callable[[dict], None]] = None,
         emit_frequency:   int = 10,
         interval:         str = "1d",
+        benchmark_symbol: Optional[str] = None,
+        shutdown_event:   Optional[threading.Event] = None,
     ) -> None:
         self._data        = data_handler
         self._strategy    = strategy
@@ -73,6 +76,8 @@ class Engine:
         self._emit_freq   = emit_frequency
         self._current_timestamp = None
         self._interval    = interval
+        self._benchmark_symbol = benchmark_symbol
+        self._shutdown_event = shutdown_event
 
     # ------------------------------------------------------------------
     # Public interface
@@ -100,6 +105,10 @@ class Engine:
         current_timestamp = None
 
         for event in self._data:
+            if self._shutdown_event and self._shutdown_event.is_set():
+                print("[Engine] Shutdown event detected — terminating backtest execution.")
+                break
+
             if isinstance(event, MarketEvent):
                 # If the timestamp changes, snapshot the portfolio for the PREVIOUS timestamp
                 if current_timestamp is not None and event.timestamp != current_timestamp:
@@ -108,8 +117,11 @@ class Engine:
                 current_timestamp = event.timestamp
                 self._current_timestamp = event.timestamp
                 
-                # Keep price registers current before any routing
-                self._execution.update_price(event)
+                # Keep price registers current before any routing (pass event queue for next-bar fills)
+                try:
+                    self._execution.update_price(event, self._queue)
+                except TypeError:
+                    self._execution.update_price(event)
                 self._portfolio.update_last_price(event.symbol, event.price)
 
                 # Seed the queue with this bar's MarketEvent
@@ -143,6 +155,39 @@ class Engine:
         if current_timestamp is not None:
             self._portfolio.record_bar_snapshot(current_timestamp)
 
+        # Compute benchmark return if benchmark_symbol is provided
+        benchmark_return = None
+        if self._benchmark_symbol:
+            try:
+                import pandas as pd
+                import os
+                import sys
+                _PIPELINE_ROOT = os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "..", "..",
+                                 "Backtester-Oriented-Market-Data-Pipeline")
+                )
+                if _PIPELINE_ROOT not in sys.path:
+                    sys.path.insert(0, _PIPELINE_ROOT)
+                from market_data.storage import load_from_parquet
+                
+                bench_df = load_from_parquet(self._benchmark_symbol, self._data._data_dir)
+                
+                if self._portfolio.bar_history and not bench_df.empty:
+                    start_ts = pd.Timestamp(self._portfolio.bar_history[0].timestamp, tz="UTC")
+                    end_ts = pd.Timestamp(self._portfolio.bar_history[-1].timestamp, tz="UTC")
+                    
+                    bench_df["timestamp"] = pd.to_datetime(bench_df["timestamp"], utc=True)
+                    bench_df = bench_df[(bench_df["timestamp"] >= start_ts) & (bench_df["timestamp"] <= end_ts)]
+                    
+                    if not bench_df.empty:
+                        bench_df = bench_df.sort_values("timestamp")
+                        initial_price = float(bench_df.iloc[0]["close"])
+                        final_price = float(bench_df.iloc[-1]["close"])
+                        if initial_price > 0:
+                            benchmark_return = (final_price - initial_price) / initial_price
+            except Exception as e:
+                print(f"[Engine] Warning: Could not compute benchmark return for '{self._benchmark_symbol}': {e}")
+
         return compute_metrics(
             bar_history      = self._portfolio.bar_history,
             fill_history     = self._portfolio.history,
@@ -150,6 +195,7 @@ class Engine:
             dividend_income  = self._portfolio.total_dividend_income,
             trades           = self._portfolio.completed_trades,
             interval         = self._interval,
+            benchmark_return = benchmark_return,
         )
 
     # ------------------------------------------------------------------

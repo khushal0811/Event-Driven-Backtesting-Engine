@@ -17,6 +17,7 @@ Usage (import):
 import argparse
 import os
 import sys
+from typing import Optional
 
 # Resolve the pipeline path relative to this file
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -121,6 +122,7 @@ def run_backtest_from_config(
     config:        BacktestConfig,
     emit_callback: callable = None,
     data_dir:      str = None,
+    shutdown_event: Optional[object] = None, # threading.Event
 ) -> MetricsResult:
     """
     Run a full backtest from a BacktestConfig object.
@@ -131,6 +133,7 @@ def run_backtest_from_config(
         config        : Validated BacktestConfig object.
         emit_callback : Optional callback for live streaming events.
         data_dir      : Path to Parquet data directory. Defaults to pipeline data/.
+        shutdown_event: Optional threading.Event to abort execution early.
 
     Returns:
         MetricsResult — full performance summary.
@@ -153,7 +156,8 @@ def run_backtest_from_config(
         "python_code": config.strategy.python_code,
     })
     portfolio        = Portfolio(initial_cash=config.initial_capital)
-    execution_engine = SimulatedExecutionEngine()
+    # Enable next-bar pricing to prevent lookahead bias in API backtests
+    execution_engine = SimulatedExecutionEngine(next_bar_pricing=True)
 
     # Wire up the correct order manager based on position_sizing config
     if config.position_sizing == "fixed":
@@ -181,6 +185,8 @@ def run_backtest_from_config(
         portfolio=portfolio,
         emit_callback=emit_callback,
         interval=config.interval,
+        benchmark_symbol=config.benchmark_symbol,
+        shutdown_event=shutdown_event,
     )
 
     return engine.run()

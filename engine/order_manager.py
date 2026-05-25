@@ -80,19 +80,13 @@ class FixedSizeOrderManager(OrderManager):
     Raises:
         ValueError: If quantity <= 0.
     """
-
     def __init__(self, quantity: int = 100, portfolio: Optional[Portfolio] = None) -> None:
         if quantity <= 0:
             raise ValueError(f"quantity must be a positive integer, got {quantity}.")
         self._quantity = quantity
         self._portfolio = portfolio
-
-        # Tracks the current open-position direction per symbol (fallback if portfolio not provided).
-        # None  → flat (no open position)
-        # BUY   → currently long
-        # SELL  → currently short
         self._open_position: Dict[str, Optional[SignalType]] = {}
-        self._last_timestamps: Dict[str, Optional[datetime]] = {}
+        self._last_signal_sent: Dict[str, tuple] = {}
 
     # ------------------------------------------------------------------
     # OrderManager interface
@@ -109,21 +103,20 @@ class FixedSizeOrderManager(OrderManager):
         signal    = event.signal_type
         
         if self._portfolio is not None and event.timestamp is not None:
-            pos = self._portfolio.position(symbol)
-            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
-            last_ts = self._last_timestamps.get(symbol)
-            if last_ts is None or event.timestamp != last_ts:
-                self._open_position[symbol] = actual_dir
-                self._last_timestamps[symbol] = event.timestamp
-
-        current = self._open_position.get(symbol)
+            last_ts, last_sig = self._last_signal_sent.get(symbol, (None, None))
+            if last_ts == event.timestamp:
+                current = last_sig
+            else:
+                pos = self._portfolio.position(symbol)
+                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+        else:
+            current = self._open_position.get(symbol)
 
         # Suppress if already in this direction
         if signal == current:
             return
 
         side = OrderSide.BUY if signal == SignalType.BUY else OrderSide.SELL
-
         quantity = self._quantity
 
         # ── Long-only guard: never sell more than currently held ──
@@ -131,8 +124,6 @@ class FixedSizeOrderManager(OrderManager):
             held = 0
             if self._portfolio is not None:
                 held = self._portfolio.position(symbol)
-            else:
-                held = 0  # no portfolio ref → can't verify, block sell
             if held <= 0:
                 return  # nothing to sell
             quantity = min(quantity, held)
@@ -147,7 +138,8 @@ class FixedSizeOrderManager(OrderManager):
 
         queue.put(order)
         self._open_position[symbol] = signal
-
+        if event.timestamp is not None:
+            self._last_signal_sent[symbol] = (event.timestamp, signal)
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -186,7 +178,6 @@ class PercentageOrderManager(OrderManager):
     Raises:
         ValueError: If percent_of_equity is not in (0, 1].
     """
-
     def __init__(self, percent_of_equity: float, portfolio: "Portfolio") -> None:
         if not (0 < percent_of_equity <= 1.0):
             raise ValueError(
@@ -195,21 +186,21 @@ class PercentageOrderManager(OrderManager):
         self._pct       = percent_of_equity
         self._portfolio = portfolio
         self._open_position: Dict[str, Optional[SignalType]] = {}
-        self._last_timestamps: Dict[str, Optional[datetime]] = {}
+        self._last_signal_sent: Dict[str, tuple] = {}
 
     def on_signal_event(self, event: SignalEvent, queue: EventQueue) -> None:
         symbol  = event.symbol
         signal  = event.signal_type
         
-        if self._portfolio is not None and event.timestamp is not None:
-            pos = self._portfolio.position(symbol)
-            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
-            last_ts = self._last_timestamps.get(symbol)
-            if last_ts is None or event.timestamp != last_ts:
-                self._open_position[symbol] = actual_dir
-                self._last_timestamps[symbol] = event.timestamp
-
-        current = self._open_position.get(symbol)
+        if event.timestamp is not None:
+            last_ts, last_sig = self._last_signal_sent.get(symbol, (None, None))
+            if last_ts == event.timestamp:
+                current = last_sig
+            else:
+                pos = self._portfolio.position(symbol)
+                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+        else:
+            current = self._open_position.get(symbol)
 
         if signal == current:
             return
@@ -240,6 +231,8 @@ class PercentageOrderManager(OrderManager):
         )
         queue.put(order)
         self._open_position[symbol] = signal
+        if event.timestamp is not None:
+            self._last_signal_sent[symbol] = (event.timestamp, signal)
 
     def __repr__(self) -> str:
         return f"PercentageOrderManager(percent={self._pct:.1%})"
@@ -272,7 +265,6 @@ class RiskBasedOrderManager(OrderManager):
     Raises:
         ValueError: If risk_per_trade or stop_fraction are out of range.
     """
-
     def __init__(
         self,
         risk_per_trade: float,
@@ -292,21 +284,21 @@ class RiskBasedOrderManager(OrderManager):
         self._stop_fraction = stop_fraction
         self._portfolio     = portfolio
         self._open_position: Dict[str, Optional[SignalType]] = {}
-        self._last_timestamps: Dict[str, Optional[datetime]] = {}
+        self._last_signal_sent: Dict[str, tuple] = {}
 
     def on_signal_event(self, event: SignalEvent, queue: EventQueue) -> None:
         symbol  = event.symbol
         signal  = event.signal_type
         
-        if self._portfolio is not None and event.timestamp is not None:
-            pos = self._portfolio.position(symbol)
-            actual_dir = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
-            last_ts = self._last_timestamps.get(symbol)
-            if last_ts is None or event.timestamp != last_ts:
-                self._open_position[symbol] = actual_dir
-                self._last_timestamps[symbol] = event.timestamp
-
-        current = self._open_position.get(symbol)
+        if event.timestamp is not None:
+            last_ts, last_sig = self._last_signal_sent.get(symbol, (None, None))
+            if last_ts == event.timestamp:
+                current = last_sig
+            else:
+                pos = self._portfolio.position(symbol)
+                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+        else:
+            current = self._open_position.get(symbol)
 
         if signal == current:
             return
@@ -339,6 +331,8 @@ class RiskBasedOrderManager(OrderManager):
         )
         queue.put(order)
         self._open_position[symbol] = signal
+        if event.timestamp is not None:
+            self._last_signal_sent[symbol] = (event.timestamp, signal)
 
     def __repr__(self) -> str:
         return (

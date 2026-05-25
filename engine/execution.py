@@ -39,13 +39,13 @@ class ExecutionEngine(ABC):
     All execution engines implement this interface.
 
     The engine loop calls:
-      - update_price(market_event)  on every MarketEvent   (price tracking)
+      - update_price(market_event, queue)  on every MarketEvent   (price tracking)
       - on_order_event(order, queue) on every OrderEvent   (fill generation)
     """
 
     @abstractmethod
-    def update_price(self, event: MarketEvent) -> None:
-        """Record the latest market price for a symbol."""
+    def update_price(self, event: MarketEvent, queue: Optional[EventQueue] = None) -> None:
+        """Record the latest market price for a symbol and process any pending orders."""
         ...
 
     @abstractmethod
@@ -60,45 +60,71 @@ class ExecutionEngine(ABC):
 
 class SimulatedExecutionEngine(ExecutionEngine):
     """
-    Fills orders immediately at the last known close price.
+    Fills orders at the last known close price (either immediately or next-bar).
 
     Behaviour:
       - Maintains a per-symbol price register updated by update_price().
-      - On receiving an OrderEvent, fills the full quantity at the
-        last registered price for that symbol.
+      - If next_bar_pricing is True: orders are queued and filled at the next bar's price.
+      - If next_bar_pricing is False: orders are filled immediately at the last known price.
       - If no price has been seen for a symbol yet, the order is dropped
         with a warning (prevents fills at price=0 corrupting the portfolio).
-      - FillEvent timestamp is the current UTC time of the fill call,
-        preserving the event-time relationship.
 
     Args:
-        None — stateless at construction; state builds from MarketEvents.
+      next_bar_pricing: If True, fills orders at the next bar's price to avoid lookahead bias.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, next_bar_pricing: bool = False) -> None:
         # Last known close price per symbol
         self._prices: Dict[str, float] = {}
         # Last known timestamp per symbol (carried into FillEvent)
         self._timestamps: Dict[str, datetime] = {}
+        # Next-bar pricing config
+        self._next_bar_pricing = next_bar_pricing
+        # Pending orders waiting for next-bar fill
+        self._pending_orders: List[OrderEvent] = []
 
     # ------------------------------------------------------------------
     # ExecutionEngine interface
     # ------------------------------------------------------------------
 
-    def update_price(self, event: MarketEvent) -> None:
-        """Record the latest close price and timestamp for a symbol."""
-        self._prices[event.symbol]     = event.price
-        self._timestamps[event.symbol] = event.timestamp
+    def update_price(self, event: MarketEvent, queue: Optional[EventQueue] = None) -> None:
+        """Record the latest close price and timestamp for a symbol, and fill pending orders if in next-bar mode."""
+        symbol = event.symbol
+        self._prices[symbol]     = event.price
+        self._timestamps[symbol] = event.timestamp
+
+        # If next-bar pricing is enabled and queue is provided, fill pending orders for this symbol
+        if self._next_bar_pricing and queue is not None:
+            still_pending = []
+            for order in self._pending_orders:
+                if order.symbol == symbol:
+                    price = self._get_fill_price(symbol)
+                    if price is None:
+                        print(f"[ExecutionEngine] Warning: no market price for '{symbol}' — order dropped.")
+                        continue
+                    fill = FillEvent(
+                        symbol     = symbol,
+                        side       = order.side,
+                        quantity   = order.quantity,
+                        fill_price = price,
+                        timestamp  = event.timestamp,
+                    )
+                    queue.put(fill)
+                else:
+                    still_pending.append(order)
+            self._pending_orders = still_pending
 
     def on_order_event(self, event: OrderEvent, queue: EventQueue) -> None:
         """
-        Fill the order at the last known market price and enqueue a FillEvent.
-
-        Drops the order silently with a warning if no price is available.
+        Fill the order or queue it depending on next_bar_pricing.
         """
         symbol = event.symbol
-        price  = self._get_fill_price(symbol)
 
+        if self._next_bar_pricing:
+            self._pending_orders.append(event)
+            return
+
+        price = self._get_fill_price(symbol)
         if price is None:
             print(
                 f"[ExecutionEngine] Warning: no market price for '{symbol}' — "
@@ -140,4 +166,4 @@ class SimulatedExecutionEngine(ExecutionEngine):
         return self._prices.get(symbol)
 
     def __repr__(self) -> str:
-        return f"SimulatedExecutionEngine(symbols_tracked={list(self._prices.keys())})"
+        return f"SimulatedExecutionEngine(symbols_tracked={list(self._prices.keys())}, next_bar_pricing={self._next_bar_pricing})"
