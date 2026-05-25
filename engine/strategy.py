@@ -261,23 +261,44 @@ class RSIStrategy(Strategy):
         self._overbought = overbought
         self._prices:    Dict[str, deque] = defaultdict(lambda: deque(maxlen=period + 1))
         self._last_signal: Dict[str, Optional[SignalType]] = defaultdict(lambda: None)
+        # Per-symbol Wilder smoothed averages (seeded on first full window)
+        self._avg_gain: Dict[str, Optional[float]] = defaultdict(lambda: None)
+        self._avg_loss: Dict[str, Optional[float]] = defaultdict(lambda: None)
 
     def on_market_event(self, event: MarketEvent, queue: EventQueue) -> None:
         symbol = event.symbol
         self._prices[symbol].append(event.price)
+
         if len(self._prices[symbol]) < self._period + 1:
             return
+
         prices  = list(self._prices[symbol])
-        changes = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        gains   = [c for c in changes if c > 0]
-        losses  = [-c for c in changes if c < 0]
-        avg_gain = sum(gains) / self._period if gains else 0.0
-        avg_loss = sum(losses) / self._period if losses else 0.0
+        changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+        gain    = max(changes[-1], 0.0)
+        loss    = max(-changes[-1], 0.0)
+
+        if self._avg_gain[symbol] is None:
+            # Seed: simple average over the first full window
+            gains_window  = [max(c, 0.0) for c in changes]
+            losses_window = [max(-c, 0.0) for c in changes]
+            self._avg_gain[symbol] = sum(gains_window) / self._period
+            self._avg_loss[symbol] = sum(losses_window) / self._period
+        else:
+            # Wilder smoothing — exponential, NOT simple average
+            self._avg_gain[symbol] = (
+                self._avg_gain[symbol] * (self._period - 1) + gain
+            ) / self._period
+            self._avg_loss[symbol] = (
+                self._avg_loss[symbol] * (self._period - 1) + loss
+            ) / self._period
+
+        avg_loss = self._avg_loss[symbol]
         if avg_loss == 0:
             rsi = 100.0
         else:
-            rs  = avg_gain / avg_loss
+            rs  = self._avg_gain[symbol] / avg_loss
             rsi = 100.0 - (100.0 / (1.0 + rs))
+
         last = self._last_signal[symbol]
         if rsi < self._oversold and last != SignalType.BUY:
             queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.BUY))
