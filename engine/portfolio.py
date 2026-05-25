@@ -78,6 +78,31 @@ class Portfolio:
         self._completed_trades: List[dict] = []
         self._open_trades: Dict[str, List[dict]] = {}
 
+        self._total_commission_paid: float = 0.0
+        self._commission_model:  str   = "flat"
+        self._commission_value:  float = 0.0
+        self._slippage_bps:      float = 0.0
+
+    def configure_costs(
+        self,
+        commission_model:  str,
+        commission_value:  float,
+        slippage_bps:      float,
+    ) -> None:
+        self._commission_model  = commission_model
+        self._commission_value  = commission_value
+        self._slippage_bps      = slippage_bps
+
+    def _calculate_commission(self, qty: int, price: float) -> float:
+        notional = qty * price
+        if self._commission_model == "flat":
+            return self._commission_value
+        elif self._commission_model == "per_share":
+            return qty * self._commission_value
+        elif self._commission_model == "percentage":
+            return notional * self._commission_value
+        return 0.0
+
     # ------------------------------------------------------------------
     # Engine loop hooks
     # ------------------------------------------------------------------
@@ -128,12 +153,19 @@ class Portfolio:
 
         current_qty = self._positions.get(symbol, 0)
 
+        commission = self._calculate_commission(qty, price)
+
+        # Apply slippage to fill price (increases cost on buy, decreases on sell)
+        slippage_amount = price * (self._slippage_bps / 10000)
+
         if event.side == OrderSide.BUY:
-            if self._cash < cost:
+            total_cost = cost + commission + (qty * slippage_amount)
+            if self._cash < total_cost:
                 print(f"[Portfolio] WARNING: Insufficient cash to execute BUY of {qty} {symbol} at {price:.2f}. "
-                      f"Required: {cost:.2f}, Available: {self._cash:.2f}. Skipping fill.")
+                      f"Required: {total_cost:.2f}, Available: {self._cash:.2f}. Skipping fill.")
                 return
-            self._cash -= cost
+            self._cash -= total_cost
+            self._total_commission_paid += commission
             self._positions[symbol] = current_qty + qty
         else:  # SELL
             # ── Long-only safety net: never go short ──
@@ -144,7 +176,11 @@ class Portfolio:
                 print(f"[Portfolio] CAPPED: Sell qty {qty} exceeds held {current_qty} for {symbol}. Capping to {current_qty}.")
                 qty = current_qty
                 cost = qty * price
-            self._cash += cost
+                commission = self._calculate_commission(qty, price)
+
+            net_proceeds = cost - commission - (qty * slippage_amount)
+            self._cash += net_proceeds
+            self._total_commission_paid += commission
             self._positions[symbol] = current_qty - qty
 
         # FIFO Trade matching
@@ -328,6 +364,10 @@ class Portfolio:
     def initial_cash(self) -> float:
         """Starting capital."""
         return self._initial_cash
+
+    @property
+    def total_commission_paid(self) -> float:
+        return self._total_commission_paid
 
     def position(self, symbol: str) -> int:
         """Return net quantity held for a symbol (0 if flat)."""

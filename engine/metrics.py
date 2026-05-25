@@ -78,6 +78,7 @@ class MetricsResult:
     total_return_with_dividends: float = 0.0
     benchmark_return:          Optional[float] = None
     alpha:                     Optional[float] = None
+    total_commission_paid:     float = 0.0
 
     def __str__(self) -> str:
         sharpe    = f"{self.sharpe_ratio:.4f}"  if self.sharpe_ratio is not None else "N/A"
@@ -121,6 +122,7 @@ def compute_metrics(
     benchmark_return: Optional[float] = None,
     trades:           Optional[List[dict]] = None,
     interval:         str = "1d",
+    total_commission_paid: float = 0.0,
 ) -> MetricsResult:
     """
     Compute performance metrics from equity curve data.
@@ -150,6 +152,7 @@ def compute_metrics(
             initial_value   = initial_cash,
             final_value     = initial_cash,
             total_snapshots = 0,
+            total_commission_paid = total_commission_paid,
         )
 
     equity_curve = [snap.total_value for snap in history]
@@ -188,6 +191,7 @@ def compute_metrics(
         total_return_with_dividends = total_w_div,
         benchmark_return          = benchmark_return,
         alpha                     = alpha,
+        total_commission_paid     = total_commission_paid,
     )
 
 

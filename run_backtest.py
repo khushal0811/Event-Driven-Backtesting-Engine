@@ -156,6 +156,11 @@ def run_backtest_from_config(
         "python_code": config.strategy.python_code,
     })
     portfolio        = Portfolio(initial_cash=config.initial_capital)
+    portfolio.configure_costs(
+        commission_model = config.commission_model,
+        commission_value = config.commission_value,
+        slippage_bps     = config.slippage_bps,
+    )
     # Enable next-bar pricing to prevent lookahead bias in API backtests
     execution_engine = SimulatedExecutionEngine(next_bar_pricing=True)
 

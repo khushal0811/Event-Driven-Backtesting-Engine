@@ -196,6 +196,7 @@ class Engine:
             trades           = self._portfolio.completed_trades,
             interval         = self._interval,
             benchmark_return = benchmark_return,
+            total_commission_paid = self._portfolio.total_commission_paid,
         )
 
     # ------------------------------------------------------------------

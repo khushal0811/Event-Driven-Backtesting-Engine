@@ -60,8 +60,12 @@ class BacktestConfig:
 
     # Optional
     benchmark_symbol:     Optional[str]   = "SPY"
-    slippage_bps:         Optional[float] = 0.0
     include_dividends:    bool            = True
+
+    # Transaction costs — applied per fill
+    commission_model:  str   = "flat"   # "flat" | "per_share" | "percentage"
+    commission_value:  float = 0.0      # $0 flat | $0.005/share | 0.001 = 0.1%
+    slippage_bps:      float = 0.0      # basis points slippage on fill price
 
     def validate(self) -> None:
         """Raise ValueError if config is invalid."""
@@ -83,3 +87,10 @@ class BacktestConfig:
                     f"Got {self.position_size}. Pass a percentage (e.g. 10.0 for 10%), "
                     "not a fraction."
                 )
+        valid_commission_models = {"flat", "per_share", "percentage"}
+        if self.commission_model not in valid_commission_models:
+            raise ValueError(f"commission_model must be one of {valid_commission_models}")
+        if self.commission_value < 0:
+            raise ValueError("commission_value must be >= 0")
+        if self.slippage_bps < 0:
+            raise ValueError("slippage_bps must be >= 0")
