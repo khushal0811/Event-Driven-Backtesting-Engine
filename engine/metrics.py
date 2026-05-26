@@ -184,7 +184,7 @@ def compute_metrics(
         cagr                      = _cagr(initial_cash, final_value, start_date, end_date),
         volatility                = _annualised_volatility(equity_curve, interval),
         win_rate                  = _win_rate(trades),
-        total_trades              = len(trades) if trades else len(fill_history),
+        total_trades              = len(trades) if trades else 0,
         avg_trade_return          = _avg_trade_return(trades),
         total_dividend_income     = dividend_income,
         price_return              = price_ret,

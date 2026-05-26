@@ -264,6 +264,7 @@ class RSIStrategy(Strategy):
         # Per-symbol Wilder smoothed averages (seeded on first full window)
         self._avg_gain: Dict[str, Optional[float]] = defaultdict(lambda: None)
         self._avg_loss: Dict[str, Optional[float]] = defaultdict(lambda: None)
+        self._rsi: Dict[str, float] = {}
 
     def on_market_event(self, event: MarketEvent, queue: EventQueue) -> None:
         symbol = event.symbol
@@ -299,6 +300,8 @@ class RSIStrategy(Strategy):
             rs  = self._avg_gain[symbol] / avg_loss
             rsi = 100.0 - (100.0 / (1.0 + rs))
 
+        self._rsi[symbol] = rsi
+
         last = self._last_signal[symbol]
         if rsi < self._oversold and last != SignalType.BUY:
             queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.BUY))
@@ -329,43 +332,71 @@ class MACDStrategy(Strategy):
         self._fast   = fast
         self._slow   = slow
         self._signal = signal
-        self._prices:      Dict[str, deque] = defaultdict(lambda: deque(maxlen=slow + signal + 10))
-        self._last_signal: Dict[str, Optional[SignalType]] = defaultdict(lambda: None)
+        self._k_fast   = 2 / (fast + 1)
+        self._k_slow   = 2 / (slow + 1)
+        self._k_signal = 2 / (signal + 1)
 
-    def _ema(self, prices: list, period: int) -> float:
-        if len(prices) < period:
-            return sum(prices) / len(prices)
-        k = 2 / (period + 1)
-        ema = prices[0]
-        for p in prices[1:]:
-            ema = p * k + ema * (1 - k)
-        return ema
+        self._prices:      Dict[str, list] = defaultdict(list)
+        self._macd_values: Dict[str, list] = defaultdict(list)
+
+        self._ema_fast:   Dict[str, Optional[float]] = defaultdict(lambda: None)
+        self._ema_slow:   Dict[str, Optional[float]] = defaultdict(lambda: None)
+        self._ema_signal: Dict[str, Optional[float]] = defaultdict(lambda: None)
+        self._last_signal: Dict[str, Optional[SignalType]] = defaultdict(lambda: None)
 
     def on_market_event(self, event: MarketEvent, queue: EventQueue) -> None:
         symbol = event.symbol
         self._prices[symbol].append(event.price)
-        prices = list(self._prices[symbol])
+        prices = self._prices[symbol]
+
+        if len(prices) == self._slow:
+            # Seed EMAs
+            fast_ema = prices[0]
+            for p in prices[1:]:
+                fast_ema = p * self._k_fast + fast_ema * (1 - self._k_fast)
+            self._ema_fast[symbol] = fast_ema
+
+            slow_ema = prices[0]
+            for p in prices[1:]:
+                slow_ema = p * self._k_slow + slow_ema * (1 - self._k_slow)
+            self._ema_slow[symbol] = slow_ema
+
+            macd = fast_ema - slow_ema
+            self._macd_values[symbol].append(macd)
+
+        elif len(prices) > self._slow:
+            # Update EMAs recursively
+            self._ema_fast[symbol] = event.price * self._k_fast + self._ema_fast[symbol] * (1 - self._k_fast)
+            self._ema_slow[symbol] = event.price * self._k_slow + self._ema_slow[symbol] * (1 - self._k_slow)
+            macd = self._ema_fast[symbol] - self._ema_slow[symbol]
+            self._macd_values[symbol].append(macd)
+
+            macd_vals = self._macd_values[symbol]
+            if len(macd_vals) == self._signal:
+                # Seed signal line
+                ema_sig = macd_vals[0]
+                for m in macd_vals[1:]:
+                    ema_sig = m * self._k_signal + ema_sig * (1 - self._k_signal)
+                self._ema_signal[symbol] = ema_sig
+            elif len(macd_vals) > self._signal:
+                # Update signal line recursively
+                self._ema_signal[symbol] = macd * self._k_signal + self._ema_signal[symbol] * (1 - self._k_signal)
+
+        # Enforce exact same warmup limit as original
         if len(prices) < self._slow + self._signal:
             return
-        macd_values = []
-        for i in range(self._signal, len(prices) + 1):
-            window = prices[:i]
-            if len(window) < self._slow:
-                continue
-            fast_ema = self._ema(window, self._fast)
-            slow_ema = self._ema(window, self._slow)
-            macd_values.append(fast_ema - slow_ema)
-        if len(macd_values) < self._signal:
-            return
-        macd_line   = macd_values[-1]
-        signal_line = self._ema(macd_values[-self._signal:], self._signal)
-        last = self._last_signal[symbol]
-        if macd_line > signal_line and last != SignalType.BUY:
-            queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.BUY))
-            self._last_signal[symbol] = SignalType.BUY
-        elif macd_line < signal_line and last != SignalType.SELL:
-            queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.SELL))
-            self._last_signal[symbol] = SignalType.SELL
+
+        if self._ema_signal[symbol] is not None:
+            macd_line = self._macd_values[symbol][-1]
+            signal_line = self._ema_signal[symbol]
+            last = self._last_signal[symbol]
+
+            if macd_line > signal_line and last != SignalType.BUY:
+                queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.BUY))
+                self._last_signal[symbol] = SignalType.BUY
+            elif macd_line < signal_line and last != SignalType.SELL:
+                queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.SELL))
+                self._last_signal[symbol] = SignalType.SELL
 
     def __repr__(self) -> str:
         return f"MACDStrategy(fast={self._fast}, slow={self._slow}, signal={self._signal})"
@@ -424,7 +455,7 @@ class BollingerBandsStrategy(Strategy):
         squeeze_factor : Band width threshold to detect a squeeze (fraction of mean).
     """
 
-    def __init__(self, window: int = 20, num_std: float = 2.0, squeeze_factor: float = 0.02) -> None:
+    def __init__(self, window: int = 20, num_std: float = 2.0, squeeze_factor: float = 0.10) -> None:
         self._window         = window
         self._num_std        = num_std
         self._squeeze_factor = squeeze_factor
@@ -540,29 +571,33 @@ class TrendFollowingStrategy(Strategy):
         if period <= 0:
             raise ValueError("period must be positive.")
         self._period = period
-        self._prices:      Dict[str, deque] = defaultdict(lambda: deque(maxlen=period + 1))
+        self._k = 2 / (period + 1)
+        self._prices:      Dict[str, list] = defaultdict(list)
+        self._ema_val:     Dict[str, Optional[float]] = defaultdict(lambda: None)
         self._last_signal: Dict[str, Optional[SignalType]] = defaultdict(lambda: None)
-
-    def _ema(self, prices: list, period: int) -> float:
-        if len(prices) < period:
-            return sum(prices) / len(prices)
-        k = 2 / (period + 1)
-        ema = prices[0]
-        for p in prices[1:]:
-            ema = p * k + ema * (1 - k)
-        return ema
 
     def on_market_event(self, event: MarketEvent, queue: EventQueue) -> None:
         symbol = event.symbol
         self._prices[symbol].append(event.price)
-        if len(self._prices[symbol]) < self._period + 1:
+        prices = self._prices[symbol]
+
+        if len(prices) < self._period:
             return
 
-        prices   = list(self._prices[symbol])
-        ema_curr = self._ema(prices, self._period)
-        ema_prev = self._ema(prices[:-1], self._period)
-        last     = self._last_signal[symbol]
+        if len(prices) == self._period:
+            # Seed the EMA with the first period prices
+            ema = prices[0]
+            for p in prices[1:]:
+                ema = p * self._k + ema * (1 - self._k)
+            self._ema_val[symbol] = ema
+            return
 
+        # At this point, len(prices) >= period + 1
+        ema_prev = self._ema_val[symbol]
+        ema_curr = event.price * self._k + ema_prev * (1 - self._k)
+        self._ema_val[symbol] = ema_curr
+
+        last = self._last_signal[symbol]
         if ema_curr > ema_prev and last != SignalType.BUY:
             queue.put(SignalEvent(symbol=symbol, signal_type=SignalType.BUY))
             self._last_signal[symbol] = SignalType.BUY

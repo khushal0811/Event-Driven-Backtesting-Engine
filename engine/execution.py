@@ -19,7 +19,7 @@ Slippage note:
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from engine.events import (
     MarketEvent,

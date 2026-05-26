@@ -108,7 +108,10 @@ class FixedSizeOrderManager(OrderManager):
                 current = last_sig
             else:
                 pos = self._portfolio.position(symbol)
-                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                if pos != 0:
+                    current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                else:
+                    current = self._open_position.get(symbol)
         else:
             current = self._open_position.get(symbol)
 
@@ -198,7 +201,10 @@ class PercentageOrderManager(OrderManager):
                 current = last_sig
             else:
                 pos = self._portfolio.position(symbol)
-                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                if pos != 0:
+                    current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                else:
+                    current = self._open_position.get(symbol)
         else:
             current = self._open_position.get(symbol)
 
@@ -296,7 +302,10 @@ class RiskBasedOrderManager(OrderManager):
                 current = last_sig
             else:
                 pos = self._portfolio.position(symbol)
-                current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                if pos != 0:
+                    current = SignalType.BUY if pos > 0 else (SignalType.SELL if pos < 0 else None)
+                else:
+                    current = self._open_position.get(symbol)
         else:
             current = self._open_position.get(symbol)
 

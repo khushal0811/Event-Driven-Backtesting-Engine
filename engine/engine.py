@@ -162,19 +162,27 @@ class Engine:
                 import pandas as pd
                 import os
                 import sys
-                _PIPELINE_ROOT = os.path.abspath(
-                    os.path.join(os.path.dirname(__file__), "..", "..",
-                                 "Backtester-Oriented-Market-Data-Pipeline")
-                )
-                if _PIPELINE_ROOT not in sys.path:
-                    sys.path.insert(0, _PIPELINE_ROOT)
-                from market_data.storage import load_from_parquet
+                
+                try:
+                    from market_data.storage import load_from_parquet, load_dividends_from_parquet
+                except ImportError:
+                    pipeline_path = os.environ.get("PIPELINE_PATH")
+                    if pipeline_path and pipeline_path not in sys.path:
+                        sys.path.insert(0, pipeline_path)
+                    else:
+                        _PIPELINE_ROOT = os.path.abspath(
+                            os.path.join(os.path.dirname(__file__), "..", "..",
+                                         "Backtester-Oriented-Market-Data-Pipeline")
+                        )
+                        if _PIPELINE_ROOT not in sys.path:
+                            sys.path.insert(0, _PIPELINE_ROOT)
+                    from market_data.storage import load_from_parquet, load_dividends_from_parquet
                 
                 bench_df = load_from_parquet(self._benchmark_symbol, self._data._data_dir)
                 
                 if self._portfolio.bar_history and not bench_df.empty:
-                    start_ts = pd.Timestamp(self._portfolio.bar_history[0].timestamp, tz="UTC")
-                    end_ts = pd.Timestamp(self._portfolio.bar_history[-1].timestamp, tz="UTC")
+                    start_ts = pd.to_datetime(self._portfolio.bar_history[0].timestamp, utc=True)
+                    end_ts = pd.to_datetime(self._portfolio.bar_history[-1].timestamp, utc=True)
                     
                     bench_df["timestamp"] = pd.to_datetime(bench_df["timestamp"], utc=True)
                     bench_df = bench_df[(bench_df["timestamp"] >= start_ts) & (bench_df["timestamp"] <= end_ts)]
@@ -184,7 +192,29 @@ class Engine:
                         initial_price = float(bench_df.iloc[0]["close"])
                         final_price = float(bench_df.iloc[-1]["close"])
                         if initial_price > 0:
-                            benchmark_return = (final_price - initial_price) / initial_price
+                            price_return = (final_price - initial_price) / initial_price
+
+                            # Include dividends in benchmark return for fair alpha comparison.
+                            # Without this, alpha is inflated because the strategy return includes
+                            # dividends but the benchmark return is price-only (~1.5-2%/yr for SPY).
+                            dividend_yield = 0.0
+                            try:
+                                div_df = load_dividends_from_parquet(
+                                    self._benchmark_symbol, self._data._data_dir
+                                )
+                                if div_df is not None and not div_df.empty:
+                                    div_df["timestamp"] = pd.to_datetime(div_df["timestamp"], utc=True)
+                                    div_df = div_df[
+                                        (div_df["timestamp"] >= start_ts)
+                                        & (div_df["timestamp"] <= end_ts)
+                                    ]
+                                    if not div_df.empty:
+                                        total_divs = float(div_df["dividend_per_share"].sum())
+                                        dividend_yield = total_divs / initial_price
+                            except Exception:
+                                pass  # dividend data is optional
+
+                            benchmark_return = price_return + dividend_yield
             except Exception as e:
                 print(f"[Engine] Warning: Could not compute benchmark return for '{self._benchmark_symbol}': {e}")
 
